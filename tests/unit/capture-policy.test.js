@@ -55,6 +55,17 @@ test("treats an equal capture timestamp as a replay-order violation", () => {
     previousCount: 8, capturedAt: timestamp, feed: { ...feed, lastAcceptedAt: timestamp } }).accepted, false);
 });
 
+test("allows historical evidence retry to bypass the timestamp gate while keeping count gates", () => {
+  const delayedFeed = { ...feed, lastAcceptedAt: "2026-11-16T02:05:00.000Z", lastItemCount: 8 };
+  const bypassed = assessCapture({ candidateCount: 6, normalizedCount: 6, rejectedCount: 0,
+    previousCount: 8, capturedAt: "2026-11-16T02:01:00.000Z", feed: delayedFeed, checkTimestamp: false });
+  assert.equal(bypassed.accepted, true);
+  const stillRejected = assessCapture({ candidateCount: 6, normalizedCount: 1, rejectedCount: 0,
+    previousCount: 8, capturedAt: "2026-11-16T02:01:00.000Z", feed: delayedFeed, checkTimestamp: false });
+  assert.equal(stillRejected.accepted, false);
+  assert.match(stillRejected.reason, /too_few_usable_items/);
+});
+
 test("defaults missing capture time and canonicalizes a supplied valid timestamp", () => {
   const now = new Date("2026-11-16T02:00:00.000Z");
   assert.equal(validateCapturedAt(undefined, now), "2026-11-16T02:00:00.000Z");

@@ -13,6 +13,8 @@ export class ArticleRepository {
         visibility='visible'`);
     this.getArticleId = database.prepare("SELECT article_id FROM articles WHERE feed_id=? AND canonical_url=?");
     this.insertCaptureItem = database.prepare("INSERT INTO capture_items(capture_id, article_id, source_index) VALUES (?, ?, ?)");
+    this.insertCaptureItemIfAbsent = database.prepare(`INSERT OR IGNORE INTO capture_items
+      (capture_id, article_id, source_index) VALUES (?, ?, ?)`);
     this.markMissing = database.prepare(`UPDATE articles SET missing_streak=missing_streak+1,
       visibility=CASE WHEN missing_streak+1 >= ? THEN 'quiet' ELSE visibility END
       WHERE feed_id=? AND last_seen_at < ? AND visibility='visible'`);
@@ -30,8 +32,26 @@ export class ArticleRepository {
       WHERE ci.capture_id=? ORDER BY ci.source_index ASC`);
     this.timelineQuery = database.prepare(`SELECT c.capture_id, c.captured_at, c.normalized_count,
       ci.source_index FROM capture_items ci JOIN captures c ON c.capture_id=ci.capture_id
-      WHERE c.feed_id=? AND ci.article_id=? AND c.accepted=1
+      WHERE c.feed_id=? AND ci.article_id=? AND (c.accepted=1 OR EXISTS (
+        SELECT 1 FROM capture_review_decisions d
+        WHERE d.capture_id=c.capture_id AND d.decision IN ('release', 'auto_retry')))
       ORDER BY c.capture_id DESC LIMIT ?`);
+    this.insertHistoricalArticle = database.prepare(`INSERT INTO articles
+      (feed_id, canonical_url, title, published_at, first_seen_at, last_seen_at,
+       seen_count, missing_streak, visibility)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'visible')`);
+    this.allArticleRows = database.prepare(`SELECT article_id, canonical_url, first_seen_at, last_seen_at,
+      seen_count, missing_streak, visibility FROM articles WHERE feed_id=?`);
+    this.updateDerived = database.prepare(`UPDATE articles SET
+      seen_count=?, first_seen_at=?, last_seen_at=?, missing_streak=?, visibility=?
+      WHERE article_id=?`);
+    this.effectiveCaptureSequence = database.prepare(`SELECT c.capture_id, c.captured_at FROM captures c
+      WHERE c.feed_id=? AND (c.accepted=1 OR EXISTS (
+        SELECT 1 FROM capture_review_decisions d
+        WHERE d.capture_id=c.capture_id AND d.decision IN ('release', 'auto_retry')))
+      ORDER BY c.captured_at ASC, c.capture_id ASC`);
+    this.captureLinks = database.prepare(`SELECT ci.article_id FROM capture_items ci
+      WHERE ci.capture_id=?`);
   }
 
   recordCapture(captureId, feed, records, capturedAt) {
@@ -45,6 +65,51 @@ export class ArticleRepository {
     }
     this.markMissing.run(feed.missingThreshold, feed.feedId, capturedAt);
     return present.size;
+  }
+
+  applyHistoricalObservation(feedId, captureId, record, index, capturedAt) {
+    const existing = this.byUrl.get(feedId, record.canonicalUrl);
+    let articleId;
+    if (existing) {
+      articleId = Number(existing.article_id);
+      const firstSeenAt = existing.first_seen_at < capturedAt ? existing.first_seen_at : capturedAt;
+      const lastSeenAt = existing.last_seen_at > capturedAt ? existing.last_seen_at : capturedAt;
+      this.database.prepare("UPDATE articles SET first_seen_at=?, last_seen_at=? WHERE article_id=?")
+        .run(firstSeenAt, lastSeenAt, articleId);
+    } else {
+      this.insertHistoricalArticle.run(feedId, record.canonicalUrl, record.title,
+        record.publishedAt ?? null, capturedAt, capturedAt);
+      articleId = Number(this.getArticleId.get(feedId, record.canonicalUrl).article_id);
+    }
+    this.insertCaptureItemIfAbsent.run(captureId, articleId, record.sourceIndex ?? index);
+    return articleId;
+  }
+
+  recomputeFeed(feedId, missingThreshold) {
+    const captures = this.effectiveCaptureSequence.all(feedId);
+    const presentByCapture = captures.map((capture) => new Set(
+      this.captureLinks.all(capture.capture_id).map((row) => Number(row.article_id))
+    ));
+    const articles = this.allArticleRows.all(feedId);
+    for (const article of articles) {
+      let seenCount = 0;
+      let firstSeenAt = null;
+      let lastSeenAt = null;
+      let streak = 0;
+      captures.forEach((capture, index) => {
+        if (presentByCapture[index].has(article.article_id)) {
+          seenCount += 1;
+          if (firstSeenAt === null) firstSeenAt = capture.captured_at;
+          lastSeenAt = capture.captured_at;
+          streak = 0;
+        } else if (seenCount > 0) {
+          streak += 1;
+        }
+      });
+      const visibility = streak >= missingThreshold ? "quiet" : "visible";
+      this.updateDerived.run(seenCount, firstSeenAt, lastSeenAt, streak, visibility, article.article_id);
+    }
+    return captures;
   }
 
   list(feedId, { visibility = null, limit = 50, offset = 0 } = {}) {

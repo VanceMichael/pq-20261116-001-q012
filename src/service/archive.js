@@ -13,6 +13,10 @@ import { ReviewService } from "./review-service.js";
 import { CsvExporter } from "../export/csv-exporter.js";
 import { ArticleTimelineService } from "./article-timeline.js";
 import { IntegrityAuditService } from "./integrity-audit.js";
+import { EvidenceRepository } from "../store/evidence-repository.js";
+import { CaptureReviewRepository } from "../store/capture-review-repository.js";
+import { CaptureReviewService } from "./capture-review-service.js";
+import { HistoricalCaptureService } from "./historical-capture-service.js";
 
 export class NewsArchive {
   constructor(filename, options = {}) {
@@ -23,11 +27,21 @@ export class NewsArchive {
     this.articles = new ArticleRepository(this.database);
     this.fetches = new FetchRepository(this.database);
     this.reviews = new ReviewRepository(this.database);
+    this.evidence = new EvidenceRepository(this.database);
+    this.captureReviews = new CaptureReviewRepository(this.database);
+    this.historicalCaptures = new HistoricalCaptureService({
+      database: this.database,
+      feeds: this.feeds,
+      captures: this.captures,
+      articles: this.articles,
+      clock: this.clock
+    });
     this.imports = new ImportService({
       database: this.database,
       feeds: this.feeds,
       captures: this.captures,
       articles: this.articles,
+      evidence: this.evidence,
       clock: this.clock
     });
     this.refreshes = new RefreshService({
@@ -40,6 +54,14 @@ export class NewsArchive {
     this.changes = new ChangeReportService({ feeds: this.feeds, captures: this.captures, articles: this.articles });
     this.health = new HealthReportService({ feeds: this.feeds, fetches: this.fetches, clock: this.clock });
     this.reviewService = new ReviewService({ feeds: this.feeds, reviews: this.reviews, clock: this.clock });
+    this.captureReviewService = new CaptureReviewService({
+      feeds: this.feeds,
+      captures: this.captures,
+      evidence: this.evidence,
+      decisions: this.captureReviews,
+      historical: this.historicalCaptures,
+      clock: this.clock
+    });
     this.csvExporter = new CsvExporter({ database: this.database, feeds: this.feeds, articles: this.articles });
     this.timelines = new ArticleTimelineService({ feeds: this.feeds, reviews: this.reviews, articles: this.articles });
     this.integrityAudit = new IntegrityAuditService(this.database);
@@ -63,8 +85,9 @@ export class NewsArchive {
     const latest = this.captures.recent(feedId, 1)[0] ?? null;
     return {
       ...feed,
-      health: latest ? latest.accepted ? "healthy" : "degraded" : "awaiting_capture",
-      latestAttempt: latest,
+      health: latest ? latest.accepted || this.captures.reviewSummary(latest.captureId).effectiveDecision
+        ? "healthy" : "degraded" : "awaiting_capture",
+      latestAttempt: latest ? this.captures.enrichWithReview(latest) : null,
       statistics: this.articles.stats(feedId),
       collectionHealth: this.health.report(feedId)
     };
@@ -77,7 +100,7 @@ export class NewsArchive {
 
   listCaptures(feedId, limit) {
     if (!this.feeds.get(feedId)) return null;
-    return this.captures.recent(feedId, limit);
+    return this.captures.recent(feedId, limit).map((capture) => this.captures.enrichWithReview(capture));
   }
 
   listFetchAttempts(feedId, limit) {
@@ -98,6 +121,30 @@ export class NewsArchive {
 
   reviewEvents(feedId, articleId, limit) {
     return this.reviewService.events(feedId, articleId, limit);
+  }
+
+  reviewQueue(feedId, limit) {
+    return this.captureReviewService.queue(feedId, limit);
+  }
+
+  captureEvidence(feedId, captureId) {
+    return this.captureReviewService.captureEvidence(feedId, captureId);
+  }
+
+  captureReviewHistory(feedId, captureId, limit) {
+    return this.captureReviewService.history(feedId, captureId, limit);
+  }
+
+  releaseCapture(feedId, captureId, input) {
+    return this.captureReviewService.release(feedId, captureId, input);
+  }
+
+  upholdCapture(feedId, captureId, input) {
+    return this.captureReviewService.uphold(feedId, captureId, input);
+  }
+
+  retryCapture(feedId, captureId, input) {
+    return this.captureReviewService.retry(feedId, captureId, input);
   }
 
   exportCsv(feedId, writable, options) {

@@ -1,9 +1,9 @@
-export function assessCapture({ candidateCount, normalizedCount, rejectedCount, previousCount, feed, capturedAt }) {
+export function assessCapture({ candidateCount, normalizedCount, rejectedCount, previousCount, feed, capturedAt, checkTimestamp = true }) {
   if (!Number.isInteger(candidateCount) || candidateCount < 0) return { accepted: false, reason: "invalid_candidate_count" };
   if (normalizedCount < feed.minimumItems) {
     return { accepted: false, reason: `too_few_usable_items:${normalizedCount}<${feed.minimumItems}` };
   }
-  if (feed.lastAcceptedAt && capturedAt <= feed.lastAcceptedAt) {
+  if (checkTimestamp && feed.lastAcceptedAt && capturedAt <= feed.lastAcceptedAt) {
     return { accepted: false, reason: "stale_capture_timestamp" };
   }
   const requiredFraction = previousCount > 0 ? Math.max(feed.minimumItems, Math.ceil(previousCount * 0.25)) : 0;

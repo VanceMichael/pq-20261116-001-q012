@@ -4,15 +4,17 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { NewsArchive } from "./service/archive.js";
 import { createHttpServer } from "./http/server.js";
+import { runReviewDemo } from "./service/review-demo.js";
 
 export async function main(args = process.argv.slice(2), env = process.env) {
   const [command, ...parameters] = args;
   if (command === "demo") return runDemo(parameters[0] ?? "fixtures/rolling-feed.html");
+  if (command === "review-demo") return runReviewDemo();
   if (command === "serve") return runServer(env);
   if (new Set(["import", "inspect", "health", "changes", "export", "audit"]).has(command)) {
     return runArchiveCommand(command, parameters, env);
   }
-  throw new Error("usage: node --experimental-sqlite src/cli.js <demo [html-file] | serve | import <feed> <html> | inspect|health|changes <feed> | export <feed> | audit>");
+  throw new Error("usage: node --experimental-sqlite src/cli.js <demo [html-file] | review-demo | serve | import <feed> <html> | inspect|health|changes <feed> | export <feed> | audit>");
 }
 
 async function runDemo(filename) {

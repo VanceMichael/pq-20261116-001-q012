@@ -92,6 +92,30 @@ async function routeRequest(request, response, archive) {
     const result = archive.listCaptures(feedId, url.searchParams.get("limit"));
     return result ? writeJson(response, 200, { runs: result }) : notFound(response);
   }
+  if (segments.length === 4 && segments[3] === "review-queue" && request.method === "GET") {
+    const result = archive.reviewQueue(feedId, url.searchParams.get("limit"));
+    return result ? writeJson(response, 200, result) : notFound(response);
+  }
+  if (segments.length === 5 && segments[3] === "captures" && segments[4] === "evidence" && request.method === "GET") {
+    const captureId = Number(url.searchParams.get("captureId"));
+    const result = archive.captureEvidence(feedId, captureId);
+    return writeJson(response, result.status, result);
+  }
+  if (segments.length === 6 && segments[3] === "captures" && segments[5] === "review") {
+    const captureId = Number(segments[4]);
+    if (request.method === "GET") {
+      const result = archive.captureReviewHistory(feedId, captureId, url.searchParams.get("limit"));
+      return writeJson(response, result.status, result);
+    }
+    if (request.method === "POST") {
+      const body = await readJson(request);
+      const action = body.action;
+      if (action === "release") return writeDecision(response, archive.releaseCapture(feedId, captureId, body));
+      if (action === "uphold") return writeDecision(response, archive.upholdCapture(feedId, captureId, body));
+      if (action === "retry") return writeDecision(response, archive.retryCapture(feedId, captureId, body));
+      throw new TypeError("action must be release, uphold or retry");
+    }
+  }
   if (segments.length === 4 && segments[3] === "attempts" && request.method === "GET") {
     const result = archive.listFetchAttempts(feedId, url.searchParams.get("limit"));
     return result ? writeJson(response, 200, { attempts: result }) : notFound(response);
@@ -158,6 +182,10 @@ function readBody(request) {
 
 function notFound(response) {
   return writeJson(response, 404, { error: "not_found", message: "resource or route not found" });
+}
+
+function writeDecision(response, result) {
+  return writeJson(response, result.status, result);
 }
 
 function writeJson(response, status, value) {

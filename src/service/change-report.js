@@ -8,7 +8,7 @@ export class ChangeReportService {
   report(feedId) {
     const feed = this.feeds.get(feedId);
     if (!feed) return null;
-    const [current, previous] = this.captures.acceptedPair(feedId);
+    const [current, previous] = this.captures.effectivePair(feedId);
     if (!current || !previous) {
       return {
         feedId,

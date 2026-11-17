@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export function openDatabase(filename) {
   const path = resolve(filename);
@@ -17,8 +17,20 @@ export function migrate(database) {
   const version = database.prepare("PRAGMA user_version").get().user_version;
   if (version > SCHEMA_VERSION) throw new Error(`database schema ${version} is newer than supported ${SCHEMA_VERSION}`);
   if (version === SCHEMA_VERSION) return;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    if (version < 1) migrateToV1(database);
+    if (version < 2) migrateToV2(database);
+    database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function migrateToV1(database) {
   database.exec(`
-    BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS feeds (
       feed_id TEXT PRIMARY KEY,
       base_url TEXT NOT NULL,
@@ -92,8 +104,48 @@ export function migrate(database) {
       changed_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS review_events_article_time ON review_events(article_id, event_id DESC);
-    PRAGMA user_version = 1;
-    COMMIT;
+  `);
+}
+
+function migrateToV2(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS capture_evidence (
+      evidence_id INTEGER PRIMARY KEY,
+      capture_id INTEGER NOT NULL REFERENCES captures(capture_id) ON DELETE CASCADE,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      raw_html TEXT NOT NULL,
+      records_json TEXT NOT NULL,
+      rejected_json TEXT NOT NULL,
+      policy_context_json TEXT NOT NULL,
+      policy_fingerprint TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(capture_id, attempt)
+    );
+    CREATE INDEX IF NOT EXISTS capture_evidence_capture ON capture_evidence(capture_id, evidence_id);
+    CREATE TABLE IF NOT EXISTS capture_review_decisions (
+      decision_id INTEGER PRIMARY KEY,
+      capture_id INTEGER NOT NULL REFERENCES captures(capture_id) ON DELETE CASCADE,
+      feed_id TEXT NOT NULL REFERENCES feeds(feed_id),
+      evidence_id INTEGER REFERENCES capture_evidence(evidence_id),
+      decision TEXT NOT NULL CHECK(decision IN
+        ('release', 'uphold', 'auto_retry', 'retry_failed', 'blocked_stale')),
+      decided_by TEXT NOT NULL,
+      note TEXT,
+      prior_policy_fingerprint TEXT,
+      current_policy_fingerprint TEXT,
+      gate_reason TEXT,
+      decided_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS capture_decisions_capture ON capture_review_decisions(capture_id, decision_id);
+    CREATE INDEX IF NOT EXISTS capture_decisions_feed ON capture_review_decisions(feed_id, decision_id DESC);
+    CREATE VIEW IF NOT EXISTS effective_captures AS
+      SELECT c.* FROM captures c
+      WHERE c.accepted = 1
+         OR EXISTS (
+           SELECT 1 FROM capture_review_decisions d
+           WHERE d.capture_id = c.capture_id AND d.decision IN ('release', 'auto_retry')
+         );
   `);
 }
 
